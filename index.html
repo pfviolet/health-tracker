@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>건강 기록</title>
+
+<!-- ✅ Firebase 설정 (본인 프로젝트 값으로 교체하세요) -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getDatabase, ref, set, get, child } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDplSRgLvXabE9vvIa8iVCqeXc4KpJMqjA",
+    authDomain: "health-tracker-b7969.firebaseapp.com",
+    databaseURL: "https://health-tracker-b7969-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "health-tracker-b7969",
+    storageBucket: "health-tracker-b7969.firebasestorage.app",
+    messagingSenderId: "728285630128",
+    appId: "1:728285630128:web:80bf255d2adecd9649f575"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  // ── 날짜 유틸 ──
+  function today() {
+    return new Date().toISOString().slice(0, 10); // "2026-06-22"
+  }
+
+  function getWeekDates() {
+    const d = new Date();
+    const day = d.getDay();
+    const mon = new Date(d); mon.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+    return Array.from({length: 7}, (_, i) => {
+      const dt = new Date(mon); dt.setDate(mon.getDate() + i);
+      return dt.toISOString().slice(0, 10);
+    });
+  }
+
+  function getMonthDates() {
+    const d = new Date();
+    const y = d.getFullYear(), m = d.getMonth();
+    const days = new Date(y, m + 1, 0).getDate();
+    return Array.from({length: days}, (_, i) => `${y}-${String(m+1).padStart(2,'0')}-${String(i+1).padStart(2,'0')}`);
+  }
+
+  function getYearMonths() {
+    const y = new Date().getFullYear();
+    return Array.from({length: 12}, (_, i) => `${y}-${String(i+1).padStart(2,'0')}`);
+  }
+
+  // ── Firebase 저장/불러오기 ──
+  async function saveRecord(date, data) {
+    await set(ref(db, `records/${date}`), data);
+  }
+
+  async function loadRecord(date) {
+    const snap = await get(child(ref(db), `records/${date}`));
+    return snap.exists() ? snap.val() : null;
+  }
+
+  async function loadRecords(dates) {
+    const results = {};
+    await Promise.all(dates.map(async d => {
+      const snap = await get(child(ref(db), `records/${d}`));
+      if (snap.exists()) results[d] = snap.val();
+    }));
+    return results;
+  }
+
+  // ── UI 상태 ──
+  let chartInstance = null;
+  let currentTab = 'today';
+
+  // ── 탭 전환 ──
+  window.switchTab = function(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(`tab-${tab}`).classList.add('active');
+    document.querySelector(`[onclick="switchTab('${tab}')"]`).classList.add('active');
+    if (tab === 'graph') renderGraph('week');
+  };
+
+  // ── 오늘 기록 불러오기 ──
+  async function initToday() {
+    const d = today();
+    document.getElementById('today-date').textContent = d;
+    document.getElementById('today-input-date').value = d;
+    const rec = await loadRecord(d);
+    if (rec) fillForm(rec);
+  }
+
+  function fillForm(rec) {
+    if (rec.weight) document.getElementById('weight').value = rec.weight;
+    if (rec.meal_morning) document.getElementById('meal_morning').value = rec.meal_morning;
+    if (rec.meal_lunch) document.getElementById('meal_lunch').value = rec.meal_lunch;
+    if (rec.meal_dinner) document.getElementById('meal_dinner').value = rec.meal_dinner;
+    if (rec.exercise_done !== undefined) {
+      document.getElementById('ex-yes').checked = rec.exercise_done;
+      document.getElementById('ex-no').checked = !rec.exercise_done;
+      toggleMemo(rec.exercise_done);
+    }
+    if (rec.exercise_memo) document.getElementById('exercise_memo').value = rec.exercise_memo;
+  }
+
+  window.toggleMemo = function(show) {
+    document.getElementById('memo-area').style.display = show ? 'block' : 'none';
+  };
+
+  // ── 저장 ──
+  window.saveToday = async function() {
+    const date = document.getElementById('today-input-date').value;
+    const weightVal = document.getElementById('weight').value;
+    const exYes = document.getElementById('ex-yes').checked;
+    const exNo = document.getElementById('ex-no').checked;
+
+    if (!weightVal && !exYes && !exNo) {
+      showToast('입력된 내용이 없어요 😅'); return;
+    }
+
+    const data = {
+      weight: weightVal ? parseFloat(weightVal) : null,
+      meal_morning: document.getElementById('meal_morning').value.trim(),
+      meal_lunch: document.getElementById('meal_lunch').value.trim(),
+      meal_dinner: document.getElementById('meal_dinner').value.trim(),
+      exercise_done: exYes ? true : (exNo ? false : null),
+      exercise_memo: document.getElementById('exercise_memo').value.trim(),
+      saved_at: new Date().toISOString()
+    };
+
+    try {
+      await saveRecord(date, data);
+      showToast('✅ 저장되었습니다!');
+    } catch(e) {
+      showToast('❌ 저장 실패: ' + e.message);
+    }
+  };
+
+  // ── 그래프 ──
+  window.renderGraph = async function(unit) {
+    document.querySelectorAll('.graph-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector(`[onclick="renderGraph('${unit}')"]`).classList.add('active');
+
+    let dates = [], labels = [];
+
+    if (unit === 'week') {
+      dates = getWeekDates();
+      labels = dates.map(d => d.slice(5)); // "06-22"
+    } else if (unit === 'month') {
+      dates = getMonthDates();
+      labels = dates.map(d => d.slice(8) + '일');
+    } else {
+      // 년 단위: 월별 평균
+      const months = getYearMonths();
+      labels = months.map(m => m.slice(5) + '월');
+      const allDates = getMonthDates(); // rough — 실제로는 월별로 집계
+      // 월별 평균 계산
+      const y = new Date().getFullYear();
+      const monthData = await Promise.all(months.map(async mo => {
+        const [yy, mm] = mo.split('-').map(Number);
+        const days = new Date(yy, mm, 0).getDate();
+        const ds = Array.from({length: days}, (_, i) => `${yy}-${String(mm).padStart(2,'0')}-${String(i+1).padStart(2,'0')}`);
+        const recs = await loadRecords(ds);
+        const weights = Object.values(recs).map(r => r.weight).filter(Boolean);
+        return weights.length ? (weights.reduce((a,b)=>a+b,0)/weights.length).toFixed(1) : null;
+      }));
+      drawChart(labels, monthData, '월평균 몸무게 (kg)');
+      return;
+    }
+
+    const recs = await loadRecords(dates);
+    const weights = dates.map(d => (recs[d] && recs[d].weight) ? recs[d].weight : null);
+    drawChart(labels, weights, '몸무게 (kg)');
+  };
+
+  function drawChart(labels, data, label) {
+    const ctx = document.getElementById('weightChart').getContext('2d');
+    if (chartInstance) chartInstance.destroy();
+    chartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label,
+          data,
+          borderColor: '#4f86c6',
+          backgroundColor: 'rgba(79,134,198,0.12)',
+          pointBackgroundColor: '#4f86c6',
+          pointRadius: 5,
+          tension: 0.3,
+          spanGaps: true
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => ctx.raw != null ? ctx.raw + ' kg' : '기록 없음' } }
+        },
+        scales: {
+          y: { title: { display: true, text: 'kg' }, beginAtZero: false }
+        }
+      }
+    });
+  }
+
+  // ── 토스트 ──
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2500);
+  }
+
+  // ── 초기화 ──
+  window.addEventListener('DOMContentLoaded', () => {
+    initToday();
+    switchTab('today');
+  });
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, 'Noto Sans KR', sans-serif;
+    background: #f4f6fb;
+    color: #333;
+    min-height: 100vh;
+  }
+
+  header {
+    background: #4f86c6;
+    color: white;
+    text-align: center;
+    padding: 18px 16px 14px;
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+
+  /* 탭 */
+  .tabs {
+    display: flex;
+    background: white;
+    border-bottom: 2px solid #e8edf5;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .tab-btn {
+    flex: 1;
+    padding: 13px 0;
+    border: none;
+    background: none;
+    font-size: 0.95rem;
+    color: #888;
+    cursor: pointer;
+    font-weight: 500;
+    transition: color 0.2s;
+  }
+
+  .tab-btn.active {
+    color: #4f86c6;
+    border-bottom: 2px solid #4f86c6;
+    margin-bottom: -2px;
+    font-weight: 700;
+  }
+
+  /* 탭 컨텐츠 */
+  .tab-content { display: none; padding: 20px 16px 80px; }
+  .tab-content.active { display: block; }
+
+  /* 카드 */
+  .card {
+    background: white;
+    border-radius: 14px;
+    padding: 18px 16px;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+  }
+
+  .card-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #4f86c6;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+  }
+
+  /* 입력 */
+  input[type="text"], input[type="number"], input[type="date"], textarea {
+    width: 100%;
+    border: 1.5px solid #e0e6f0;
+    border-radius: 9px;
+    padding: 11px 13px;
+    font-size: 1rem;
+    background: #fafbfd;
+    color: #333;
+    outline: none;
+    transition: border-color 0.2s;
+    font-family: inherit;
+  }
+
+  input:focus, textarea:focus { border-color: #4f86c6; background: white; }
+
+  textarea { resize: none; height: 70px; }
+
+  /* 몸무게 */
+  .weight-wrap { display: flex; align-items: center; gap: 10px; }
+  .weight-wrap input { flex: 1; font-size: 1.4rem; text-align: center; font-weight: 700; }
+  .weight-unit { font-size: 1rem; color: #888; white-space: nowrap; }
+
+  /* 식단 */
+  .meal-row { display: flex; flex-direction: column; gap: 10px; }
+  .meal-label { font-size: 0.85rem; color: #888; margin-bottom: 4px; font-weight: 600; }
+
+  /* 운동 */
+  .exercise-btns { display: flex; gap: 10px; }
+  .ex-radio { display: none; }
+  .ex-label {
+    flex: 1;
+    text-align: center;
+    padding: 11px;
+    border-radius: 10px;
+    border: 2px solid #e0e6f0;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-weight: 600;
+    color: #aaa;
+  }
+
+  #ex-yes:checked ~ .exercise-btns label[for="ex-yes"] { border-color: #4caf50; background: #f0faf1; color: #4caf50; }
+  #ex-no:checked ~ .exercise-btns label[for="ex-no"] { border-color: #f44336; background: #fff3f3; color: #f44336; }
+
+  #memo-area { margin-top: 10px; display: none; }
+
+  /* 저장 버튼 */
+  .save-btn {
+    width: 100%;
+    padding: 15px;
+    background: #4f86c6;
+    color: white;
+    border: none;
+    border-radius: 12px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: 4px;
+    box-shadow: 0 3px 10px rgba(79,134,198,0.3);
+    transition: background 0.2s;
+  }
+
+  .save-btn:active { background: #3a6fa8; }
+
+  /* 그래프 */
+  .graph-btns { display: flex; gap: 8px; margin-bottom: 16px; }
+  .graph-btn {
+    flex: 1;
+    padding: 9px;
+    border: 2px solid #e0e6f0;
+    border-radius: 9px;
+    background: white;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #aaa;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .graph-btn.active { border-color: #4f86c6; color: #4f86c6; background: #f0f5ff; }
+
+  /* 토스트 */
+  #toast {
+    position: fixed;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: #333;
+    color: white;
+    padding: 12px 22px;
+    border-radius: 24px;
+    font-size: 0.95rem;
+    opacity: 0;
+    transition: all 0.3s;
+    pointer-events: none;
+    z-index: 999;
+    white-space: nowrap;
+  }
+
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .date-label {
+    font-size: 0.85rem;
+    color: #aaa;
+    margin-bottom: 16px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<header>💪 건강 기록</header>
+
+<div class="tabs">
+  <button class="tab-btn" onclick="switchTab('today')">오늘 기록</button>
+  <button class="tab-btn" onclick="switchTab('graph')">그래프</button>
+</div>
+
+<!-- 오늘 기록 탭 -->
+<div class="tab-content" id="tab-today">
+  <p class="date-label" id="today-date"></p>
+  <input type="hidden" id="today-input-date">
+
+  <!-- 몸무게 -->
+  <div class="card">
+    <div class="card-title">⚖️ 몸무게</div>
+    <div class="weight-wrap">
+      <input type="number" id="weight" placeholder="0.0" step="0.1" min="30" max="200">
+      <span class="weight-unit">kg</span>
+    </div>
+  </div>
+
+  <!-- 식단 -->
+  <div class="card">
+    <div class="card-title">🍽️ 식단</div>
+    <div class="meal-row">
+      <div>
+        <div class="meal-label">🌅 아침</div>
+        <input type="text" id="meal_morning" placeholder="예) 토스트, 커피">
+      </div>
+      <div>
+        <div class="meal-label">☀️ 점심</div>
+        <input type="text" id="meal_lunch" placeholder="예) 비빔밥, 된장국">
+      </div>
+      <div>
+        <div class="meal-label">🌙 저녁</div>
+        <input type="text" id="meal_dinner" placeholder="예) 삼겹살, 쌈채소">
+      </div>
+    </div>
+  </div>
+
+  <!-- 운동 -->
+  <div class="card">
+    <div class="card-title">🏃 운동</div>
+    <input type="radio" name="exercise" id="ex-yes" class="ex-radio" onchange="toggleMemo(true)">
+    <input type="radio" name="exercise" id="ex-no" class="ex-radio" onchange="toggleMemo(false)">
+    <div class="exercise-btns">
+      <label class="ex-label" for="ex-yes">✅ 했다</label>
+      <label class="ex-label" for="ex-no">❌ 안 했다</label>
+    </div>
+    <div id="memo-area">
+      <textarea id="exercise_memo" placeholder="예) 런닝 30분, 팔굽혀펴기 20개"></textarea>
+    </div>
+  </div>
+
+  <button class="save-btn" onclick="saveToday()">저장하기</button>
+</div>
+
+<!-- 그래프 탭 -->
+<div class="tab-content" id="tab-graph">
+  <div class="graph-btns">
+    <button class="graph-btn" onclick="renderGraph('week')">이번 주</button>
+    <button class="graph-btn" onclick="renderGraph('month')">이번 달</button>
+    <button class="graph-btn" onclick="renderGraph('year')">올해</button>
+  </div>
+  <div class="card">
+    <canvas id="weightChart"></canvas>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+</body>
+</html>
