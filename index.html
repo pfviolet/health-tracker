@@ -8,209 +8,6 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
-<script>
-  firebase.initializeApp({
-    apiKey: "AIzaSyDplSRgLvXabE9vvIa8iVCqeXc4KpJMqjA",
-    authDomain: "health-tracker-b7969.firebaseapp.com",
-    databaseURL: "https://health-tracker-b7969-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "health-tracker-b7969",
-    storageBucket: "health-tracker-b7969.firebasestorage.app",
-    messagingSenderId: "728285630128",
-    appId: "1:728285630128:web:80bf255d2adecd9649f575
-  });
-  const db = firebase.database();
-
-  function today() { return new Date().toISOString().slice(0,10); }
-
-  function getWeekDates() {
-    const d = new Date(), day = d.getDay();
-    const mon = new Date(d); mon.setDate(d.getDate() - (day===0?6:day-1));
-    return Array.from({length:7},(_,i)=>{ const dt=new Date(mon); dt.setDate(mon.getDate()+i); return dt.toISOString().slice(0,10); });
-  }
-
-  function getMonthDates() {
-    const d=new Date(), y=d.getFullYear(), m=d.getMonth();
-    const days=new Date(y,m+1,0).getDate();
-    return Array.from({length:days},(_,i)=>`${y}-${String(m+1).padStart(2,'0')}-${String(i+1).padStart(2,'0')}`);
-  }
-
-  function getYearMonths() {
-    const y=new Date().getFullYear();
-    return Array.from({length:12},(_,i)=>`${y}-${String(i+1).padStart(2,'0')}`);
-  }
-
-  function saveRecord(date, data) {
-    return db.ref('records/'+date).set(data);
-  }
-
-  function loadRecord(date) {
-    return db.ref('records/'+date).once('value').then(s=>s.exists()?s.val():null);
-  }
-
-  function loadRecords(dates) {
-    return Promise.all(dates.map(d=>db.ref('records/'+d).once('value').then(s=>({date:d,val:s.exists()?s.val():null}))))
-      .then(arr=>{ const r={}; arr.forEach(({date,val})=>{ if(val) r[date]=val; }); return r; });
-  }
-
-  let chartInstance = null;
-
-  function switchTab(tab) {
-    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
-    document.getElementById('tab-'+tab).classList.add('active');
-    document.querySelector('[onclick="switchTab(\''+tab+'\')"]').classList.add('active');
-    if(tab==='graph') renderGraph('week');
-    if(tab==='history') loadHistory();
-  }
-
-  function initToday() {
-    const d=today();
-    document.getElementById('today-date').textContent=d;
-    document.getElementById('today-input-date').value=d;
-    loadRecord(d).then(rec=>{ if(rec) fillForm(rec); });
-  }
-
-  function fillForm(rec) {
-    if(rec.weight_morning!=null) document.getElementById('weight_morning').value=rec.weight_morning;
-    if(rec.weight_evening!=null) document.getElementById('weight_evening').value=rec.weight_evening;
-    if(rec.meal_morning) document.getElementById('meal_morning').value=rec.meal_morning;
-    if(rec.meal_lunch) document.getElementById('meal_lunch').value=rec.meal_lunch;
-    if(rec.meal_dinner) document.getElementById('meal_dinner').value=rec.meal_dinner;
-    if(rec.exercise_done!==undefined) {
-      document.getElementById(rec.exercise_done?'ex-yes':'ex-no').checked=true;
-      toggleMemo(rec.exercise_done);
-    }
-    if(rec.exercise_memo) document.getElementById('exercise_memo').value=rec.exercise_memo;
-  }
-
-  function toggleMemo(show) {
-    document.getElementById('memo-area').style.display=show?'block':'none';
-  }
-
-  function saveToday() {
-    const date=document.getElementById('today-input-date').value;
-    const wm=document.getElementById('weight_morning').value;
-    const we=document.getElementById('weight_evening').value;
-    const exYes=document.getElementById('ex-yes').checked;
-    const exNo=document.getElementById('ex-no').checked;
-    const data={
-      weight_morning: wm?parseFloat(wm):null,
-      weight_evening: we?parseFloat(we):null,
-      meal_morning: document.getElementById('meal_morning').value.trim(),
-      meal_lunch: document.getElementById('meal_lunch').value.trim(),
-      meal_dinner: document.getElementById('meal_dinner').value.trim(),
-      exercise_done: exYes?true:(exNo?false:null),
-      exercise_memo: document.getElementById('exercise_memo').value.trim(),
-      saved_at: new Date().toISOString()
-    };
-    saveRecord(date,data).then(()=>showToast('✅ 저장되었습니다!')).catch(e=>showToast('❌ 저장 실패: '+e.message));
-  }
-
-  function loadHistory() {
-    const dateVal=document.getElementById('history-date').value||today();
-    document.getElementById('history-date').value=dateVal;
-    loadRecord(dateVal).then(rec=>{
-      const box=document.getElementById('history-box');
-      if(!rec){ box.innerHTML='<p class="no-record">이 날 기록이 없어요 😅</p>'; return; }
-      const exText=rec.exercise_done===true?'✅ 했다':rec.exercise_done===false?'❌ 안 했다':'—';
-      box.innerHTML=`
-        <div class="hist-section">
-          <div class="hist-title">⚖️ 몸무게</div>
-          <div class="hist-row"><span>아침</span><span>${rec.weight_morning!=null?rec.weight_morning+' kg':'—'}</span></div>
-          <div class="hist-row"><span>저녁</span><span>${rec.weight_evening!=null?rec.weight_evening+' kg':'—'}</span></div>
-        </div>
-        <div class="hist-section">
-          <div class="hist-title">🍽️ 식단</div>
-          <div class="hist-row"><span>아침</span><span>${rec.meal_morning||'—'}</span></div>
-          <div class="hist-row"><span>점심</span><span>${rec.meal_lunch||'—'}</span></div>
-          <div class="hist-row"><span>저녁</span><span>${rec.meal_dinner||'—'}</span></div>
-        </div>
-        <div class="hist-section">
-          <div class="hist-title">🏃 운동</div>
-          <div class="hist-row"><span>체크</span><span>${exText}</span></div>
-          ${rec.exercise_memo?`<div class="hist-row"><span>메모</span><span>${rec.exercise_memo}</span></div>`:''}
-        </div>`;
-    });
-  }
-
-  function renderGraph(unit) {
-    document.querySelectorAll('.graph-btn').forEach(b=>b.classList.remove('active'));
-    document.querySelector('[onclick="renderGraph(\''+unit+'\')"]').classList.add('active');
-
-    if(unit==='week') {
-      const dates=getWeekDates(), labels=dates.map(d=>d.slice(5));
-      loadRecords(dates).then(recs=>drawChart(labels, dates.map(d=>recs[d]?.weight_morning??null), dates.map(d=>recs[d]?.weight_evening??null)));
-    } else if(unit==='month') {
-      const dates=getMonthDates(), labels=dates.map(d=>d.slice(8)+'일');
-      loadRecords(dates).then(recs=>drawChart(labels, dates.map(d=>recs[d]?.weight_morning??null), dates.map(d=>recs[d]?.weight_evening??null)));
-    } else {
-      const months=getYearMonths(), labels=months.map(m=>m.slice(5)+'월');
-      const avgM=[], avgE=[];
-      Promise.all(months.map(mo=>{
-        const [yy,mm]=mo.split('-').map(Number);
-        const days=new Date(yy,mm,0).getDate();
-        const ds=Array.from({length:days},(_,i)=>`${yy}-${String(mm).padStart(2,'0')}-${String(i+1).padStart(2,'0')}`);
-        return loadRecords(ds).then(recs=>{
-          const wm=Object.values(recs).map(r=>r.weight_morning).filter(Boolean);
-          const we=Object.values(recs).map(r=>r.weight_evening).filter(Boolean);
-          avgM.push(wm.length?+(wm.reduce((a,b)=>a+b,0)/wm.length).toFixed(1):null);
-          avgE.push(we.length?+(we.reduce((a,b)=>a+b,0)/we.length).toFixed(1):null);
-        });
-      })).then(()=>drawChart(labels,avgM,avgE));
-    }
-  }
-
-  function drawChart(labels, morningData, eveningData) {
-    const ctx=document.getElementById('weightChart').getContext('2d');
-    if(chartInstance) chartInstance.destroy();
-    chartInstance=new Chart(ctx,{
-      type:'line',
-      data:{ labels, datasets:[
-        { label:'아침 몸무게', data:morningData, borderColor:'#87ceeb', backgroundColor:'rgba(135,206,235,0.15)', pointBackgroundColor:'#87ceeb', pointRadius:5, tension:0.3, spanGaps:true },
-        { label:'저녁 몸무게', data:eveningData, borderColor:'#1a4fa0', backgroundColor:'rgba(26,79,160,0.1)', pointBackgroundColor:'#1a4fa0', pointRadius:5, tension:0.3, spanGaps:true }
-      ]},
-      options:{ responsive:true, plugins:{ legend:{display:true,position:'top'}, tooltip:{callbacks:{label:ctx=>ctx.raw!=null?ctx.dataset.label+': '+ctx.raw+' kg':'기록 없음'}} }, scales:{y:{title:{display:true,text:'kg'},beginAtZero:false}} }
-    });
-  }
-
-  function downloadExcel() {
-    showToast('📊 데이터 불러오는 중...');
-    const y=new Date().getFullYear();
-    const months=getYearMonths();
-    let allDates=[];
-    months.forEach(mo=>{
-      const [yy,mm]=mo.split('-').map(Number);
-      const days=new Date(yy,mm,0).getDate();
-      for(let i=1;i<=days;i++) allDates.push(`${yy}-${String(mm).padStart(2,'0')}-${String(i).padStart(2,'0')}`);
-    });
-    loadRecords(allDates).then(recs=>{
-      const rows=[['날짜','아침 몸무게(kg)','저녁 몸무게(kg)','아침 식단','점심 식단','저녁 식단','운동 여부','운동 메모']];
-      allDates.forEach(date=>{
-        const r=recs[date]; if(!r) return;
-        rows.push([date, r.weight_morning??'', r.weight_evening??'', r.meal_morning??'', r.meal_lunch??'', r.meal_dinner??'', r.exercise_done===true?'했다':r.exercise_done===false?'안 했다':'', r.exercise_memo??'']);
-      });
-      if(rows.length===1){ showToast('저장된 기록이 없어요 😅'); return; }
-      const ws=XLSX.utils.aoa_to_sheet(rows);
-      ws['!cols']=[10,16,16,20,20,20,12,20].map(w=>({wch:w}));
-      const wb=XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb,ws,'건강기록');
-      XLSX.writeFile(wb,`건강기록_${y}.xlsx`);
-      showToast('✅ 다운로드 완료!');
-    });
-  }
-
-  function showToast(msg) {
-    const t=document.getElementById('toast');
-    t.textContent=msg; t.classList.add('show');
-    setTimeout(()=>t.classList.remove('show'),2500);
-  }
-
-  window.addEventListener('DOMContentLoaded',()=>{
-    initToday();
-    switchTab('today');
-    document.getElementById('history-date').value=today();
-  });
-</script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0;}
   body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:#f4f6fb;color:#333;min-height:100vh;}
@@ -225,6 +22,8 @@
   input[type="text"],input[type="number"],input[type="date"],textarea{width:100%;border:1.5px solid #e0e6f0;border-radius:9px;padding:11px 13px;font-size:1rem;background:#fafbfd;color:#333;outline:none;transition:border-color 0.2s;font-family:inherit;}
   input:focus,textarea:focus{border-color:#4f86c6;background:white;}
   textarea{resize:none;height:70px;}
+  .date-selector{margin-bottom:14px;}
+  .date-selector input{width:100%;font-size:1rem;font-weight:600;color:#4f86c6;border:2px solid #d0e3f7;border-radius:12px;padding:12px;text-align:center;background:white;}
   .weight-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
   .weight-item label{display:block;font-size:0.82rem;color:#888;font-weight:600;margin-bottom:6px;}
   .weight-wrap{display:flex;align-items:center;gap:6px;}
@@ -253,7 +52,6 @@
   .hist-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:0.95rem;}
   .hist-row span:first-child{color:#888;}
   .no-record{text-align:center;color:#aaa;padding:30px 0;}
-  .date-label{font-size:0.85rem;color:#aaa;margin-bottom:16px;text-align:center;}
   #toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(20px);background:#333;color:white;padding:12px 22px;border-radius:24px;font-size:0.95rem;opacity:0;transition:all 0.3s;pointer-events:none;z-index:999;white-space:nowrap;}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 </style>
@@ -268,8 +66,9 @@
 
 <!-- 오늘 기록 -->
 <div class="tab-content" id="tab-today">
-  <p class="date-label" id="today-date"></p>
-  <input type="hidden" id="today-input-date">
+  <div class="date-selector">
+    <input type="date" id="record-date" onchange="onDateChange()">
+  </div>
   <div class="card">
     <div class="card-title">⚖️ 몸무게</div>
     <div class="weight-grid">
@@ -337,5 +136,230 @@
 </div>
 
 <div id="toast"></div>
+
+<script>
+  firebase.initializeApp({
+    apiKey: "AIzaSyDplSRgLvXabE9vvIa8iVCqeXc4KpJMqjA",
+    authDomain: "health-tracker-b7969.firebaseapp.com",
+    databaseURL: "https://health-tracker-b7969-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "health-tracker-b7969",
+    storageBucket: "health-tracker-b7969.firebasestorage.app",
+    messagingSenderId: "728285630128",
+    appId: "1:728285630128:web:80bf255d2adecd9649f575"
+  });
+  var db = firebase.database();
+  var chartInstance = null;
+
+  function today() {
+    return new Date().toISOString().slice(0,10);
+  }
+
+  function showToast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(function(){ t.classList.remove('show'); }, 2500);
+  }
+
+  function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
+    document.querySelectorAll('.tab-content').forEach(function(c){ c.classList.remove('active'); });
+    document.getElementById('tab-'+tab).classList.add('active');
+    document.querySelectorAll('.tab-btn').forEach(function(b){
+      if(b.getAttribute('onclick') === "switchTab('"+tab+"')") b.classList.add('active');
+    });
+    if(tab==='graph') renderGraph('week');
+    if(tab==='history') {
+      document.getElementById('history-date').value = today();
+    }
+  }
+
+  function clearForm() {
+    document.getElementById('weight_morning').value = '';
+    document.getElementById('weight_evening').value = '';
+    document.getElementById('meal_morning').value = '';
+    document.getElementById('meal_lunch').value = '';
+    document.getElementById('meal_dinner').value = '';
+    document.getElementById('ex-yes').checked = false;
+    document.getElementById('ex-no').checked = false;
+    document.getElementById('exercise_memo').value = '';
+    document.getElementById('memo-area').style.display = 'none';
+  }
+
+  function fillForm(rec) {
+    if(rec.weight_morning != null) document.getElementById('weight_morning').value = rec.weight_morning;
+    if(rec.weight_evening != null) document.getElementById('weight_evening').value = rec.weight_evening;
+    if(rec.meal_morning) document.getElementById('meal_morning').value = rec.meal_morning;
+    if(rec.meal_lunch) document.getElementById('meal_lunch').value = rec.meal_lunch;
+    if(rec.meal_dinner) document.getElementById('meal_dinner').value = rec.meal_dinner;
+    if(rec.exercise_done === true) { document.getElementById('ex-yes').checked = true; toggleMemo(true); }
+    else if(rec.exercise_done === false) { document.getElementById('ex-no').checked = true; }
+    if(rec.exercise_memo) document.getElementById('exercise_memo').value = rec.exercise_memo;
+  }
+
+  function toggleMemo(show) {
+    document.getElementById('memo-area').style.display = show ? 'block' : 'none';
+  }
+
+  function onDateChange() {
+    var date = document.getElementById('record-date').value;
+    clearForm();
+    db.ref('records/'+date).once('value').then(function(s){
+      if(s.exists()) fillForm(s.val());
+    });
+  }
+
+  function saveToday() {
+    var date = document.getElementById('record-date').value;
+    var wm = document.getElementById('weight_morning').value;
+    var we = document.getElementById('weight_evening').value;
+    var data = {
+      weight_morning: wm ? parseFloat(wm) : null,
+      weight_evening: we ? parseFloat(we) : null,
+      meal_morning: document.getElementById('meal_morning').value.trim(),
+      meal_lunch: document.getElementById('meal_lunch').value.trim(),
+      meal_dinner: document.getElementById('meal_dinner').value.trim(),
+      exercise_done: document.getElementById('ex-yes').checked ? true : (document.getElementById('ex-no').checked ? false : null),
+      exercise_memo: document.getElementById('exercise_memo').value.trim(),
+      saved_at: new Date().toISOString()
+    };
+    db.ref('records/'+date).set(data)
+      .then(function(){ showToast('✅ 저장되었습니다!'); })
+      .catch(function(e){ showToast('❌ 저장 실패: '+e.message); });
+  }
+
+  function loadHistory() {
+    var date = document.getElementById('history-date').value;
+    if(!date) return;
+    db.ref('records/'+date).once('value').then(function(s){
+      var box = document.getElementById('history-box');
+      if(!s.exists()){ box.innerHTML='<p class="no-record">이 날 기록이 없어요 😅</p>'; return; }
+      var r = s.val();
+      var exText = r.exercise_done===true ? '✅ 했다' : r.exercise_done===false ? '❌ 안 했다' : '—';
+      box.innerHTML =
+        '<div class="hist-section"><div class="hist-title">⚖️ 몸무게</div>' +
+        '<div class="hist-row"><span>아침</span><span>'+(r.weight_morning!=null?r.weight_morning+' kg':'—')+'</span></div>' +
+        '<div class="hist-row"><span>저녁</span><span>'+(r.weight_evening!=null?r.weight_evening+' kg':'—')+'</span></div></div>' +
+        '<div class="hist-section"><div class="hist-title">🍽️ 식단</div>' +
+        '<div class="hist-row"><span>아침</span><span>'+(r.meal_morning||'—')+'</span></div>' +
+        '<div class="hist-row"><span>점심</span><span>'+(r.meal_lunch||'—')+'</span></div>' +
+        '<div class="hist-row"><span>저녁</span><span>'+(r.meal_dinner||'—')+'</span></div></div>' +
+        '<div class="hist-section"><div class="hist-title">🏃 운동</div>' +
+        '<div class="hist-row"><span>체크</span><span>'+exText+'</span></div>' +
+        (r.exercise_memo?'<div class="hist-row"><span>메모</span><span>'+r.exercise_memo+'</span></div>':'')+
+        '</div>';
+    });
+  }
+
+  function getWeekDates() {
+    var d=new Date(), day=d.getDay();
+    var mon=new Date(d); mon.setDate(d.getDate()-(day===0?6:day-1));
+    var arr=[];
+    for(var i=0;i<7;i++){ var dt=new Date(mon); dt.setDate(mon.getDate()+i); arr.push(dt.toISOString().slice(0,10)); }
+    return arr;
+  }
+
+  function getMonthDates() {
+    var d=new Date(), y=d.getFullYear(), m=d.getMonth();
+    var days=new Date(y,m+1,0).getDate(), arr=[];
+    for(var i=1;i<=days;i++) arr.push(y+'-'+String(m+1).padStart(2,'0')+'-'+String(i).padStart(2,'0'));
+    return arr;
+  }
+
+  function getYearMonths() {
+    var y=new Date().getFullYear(), arr=[];
+    for(var i=1;i<=12;i++) arr.push(y+'-'+String(i).padStart(2,'0'));
+    return arr;
+  }
+
+  function loadRecords(dates) {
+    return Promise.all(dates.map(function(d){
+      return db.ref('records/'+d).once('value').then(function(s){ return {date:d, val:s.exists()?s.val():null}; });
+    })).then(function(arr){
+      var r={};
+      arr.forEach(function(item){ if(item.val) r[item.date]=item.val; });
+      return r;
+    });
+  }
+
+  function drawChart(labels, morningData, eveningData) {
+    var ctx=document.getElementById('weightChart').getContext('2d');
+    if(chartInstance) chartInstance.destroy();
+    chartInstance=new Chart(ctx,{
+      type:'line',
+      data:{labels:labels, datasets:[
+        {label:'아침 몸무게',data:morningData,borderColor:'#87ceeb',backgroundColor:'rgba(135,206,235,0.15)',pointBackgroundColor:'#87ceeb',pointRadius:5,tension:0.3,spanGaps:true},
+        {label:'저녁 몸무게',data:eveningData,borderColor:'#1a4fa0',backgroundColor:'rgba(26,79,160,0.1)',pointBackgroundColor:'#1a4fa0',pointRadius:5,tension:0.3,spanGaps:true}
+      ]},
+      options:{responsive:true,plugins:{legend:{display:true,position:'top'},tooltip:{callbacks:{label:function(ctx){return ctx.raw!=null?ctx.dataset.label+': '+ctx.raw+' kg':'기록 없음';}}}},scales:{y:{title:{display:true,text:'kg'},beginAtZero:false}}}
+    });
+  }
+
+  function renderGraph(unit) {
+    document.querySelectorAll('.graph-btn').forEach(function(b){ b.classList.remove('active'); });
+    document.querySelectorAll('.graph-btn').forEach(function(b){
+      if(b.getAttribute('onclick')==="renderGraph('"+unit+"')") b.classList.add('active');
+    });
+    if(unit==='week') {
+      var dates=getWeekDates(), labels=dates.map(function(d){return d.slice(5);});
+      loadRecords(dates).then(function(recs){
+        drawChart(labels, dates.map(function(d){return recs[d]?recs[d].weight_morning||null:null;}), dates.map(function(d){return recs[d]?recs[d].weight_evening||null:null;}));
+      });
+    } else if(unit==='month') {
+      var dates=getMonthDates(), labels=dates.map(function(d){return d.slice(8)+'일';});
+      loadRecords(dates).then(function(recs){
+        drawChart(labels, dates.map(function(d){return recs[d]?recs[d].weight_morning||null:null;}), dates.map(function(d){return recs[d]?recs[d].weight_evening||null:null;}));
+      });
+    } else {
+      var months=getYearMonths(), labels=months.map(function(m){return m.slice(5)+'월';});
+      var avgM=[], avgE=[], promises=[];
+      months.forEach(function(mo){
+        var parts=mo.split('-'), yy=parseInt(parts[0]), mm=parseInt(parts[1]);
+        var days=new Date(yy,mm,0).getDate(), ds=[];
+        for(var i=1;i<=days;i++) ds.push(yy+'-'+String(mm).padStart(2,'0')+'-'+String(i).padStart(2,'0'));
+        promises.push(loadRecords(ds).then(function(recs){
+          var wm=Object.values(recs).map(function(r){return r.weight_morning;}).filter(Boolean);
+          var we=Object.values(recs).map(function(r){return r.weight_evening;}).filter(Boolean);
+          avgM.push(wm.length?parseFloat((wm.reduce(function(a,b){return a+b;},0)/wm.length).toFixed(1)):null);
+          avgE.push(we.length?parseFloat((we.reduce(function(a,b){return a+b;},0)/we.length).toFixed(1)):null);
+        }));
+      });
+      Promise.all(promises).then(function(){ drawChart(labels,avgM,avgE); });
+    }
+  }
+
+  function downloadExcel() {
+    showToast('📊 데이터 불러오는 중...');
+    var y=new Date().getFullYear(), months=getYearMonths(), allDates=[];
+    months.forEach(function(mo){
+      var parts=mo.split('-'), yy=parseInt(parts[0]), mm=parseInt(parts[1]);
+      var days=new Date(yy,mm,0).getDate();
+      for(var i=1;i<=days;i++) allDates.push(yy+'-'+String(mm).padStart(2,'0')+'-'+String(i).padStart(2,'0'));
+    });
+    loadRecords(allDates).then(function(recs){
+      var rows=[['날짜','아침 몸무게(kg)','저녁 몸무게(kg)','아침 식단','점심 식단','저녁 식단','운동 여부','운동 메모']];
+      allDates.forEach(function(date){
+        var r=recs[date]; if(!r) return;
+        rows.push([date, r.weight_morning||'', r.weight_evening||'', r.meal_morning||'', r.meal_lunch||'', r.meal_dinner||'', r.exercise_done===true?'했다':r.exercise_done===false?'안 했다':'', r.exercise_memo||'']);
+      });
+      if(rows.length===1){ showToast('저장된 기록이 없어요 😅'); return; }
+      var ws=XLSX.utils.aoa_to_sheet(rows);
+      ws['!cols']=[10,16,16,20,20,20,12,20].map(function(w){return {wch:w};});
+      var wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,'건강기록');
+      XLSX.writeFile(wb,'건강기록_'+y+'.xlsx');
+      showToast('✅ 다운로드 완료!');
+    });
+  }
+
+  window.onload = function() {
+    document.getElementById('record-date').value = today();
+    document.getElementById('history-date').value = today();
+    switchTab('today');
+    db.ref('records/'+today()).once('value').then(function(s){
+      if(s.exists()) fillForm(s.val());
+    });
+  };
+</script>
 </body>
 </html>
